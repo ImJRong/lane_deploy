@@ -1,0 +1,18 @@
+{
+  "model_ort": "models/lane_model.onnx",
+  "model_ov":  "models/lane_model.onnx",
+
+  "image": "data/lane_test.jpg",
+  "video": "data/lane_test.mp4",
+
+  "input_width": 640,
+  "input_height": 640,
+
+  "conf_thres": 0.25,
+  "iou_thres": 0.5,
+
+  "skip_frames": 30,
+  "count_frames": 500,
+
+  "class_names": ["lane"]
+}

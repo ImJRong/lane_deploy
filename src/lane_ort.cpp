@@ -1,6 +1,7 @@
 // ==================================================================
-//  车道线检测 —— ONNX Runtime 版
-//  1 类（lane），输入 640×640
+//  车道线检测 —— 单图检测（ONNX Runtime 版）
+//
+//  参数从 config.json 读，改参数不用重新编译
 // ==================================================================
 
 #include <opencv2/opencv.hpp>
@@ -9,23 +10,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <onnxruntime_cxx_api.h>
+#include "config.hpp"
 using namespace std;
 
-// ---------- 配置区 ----------
-const char* IMAGE_PATH = "data/lane_test.jpg";           // ← 改成你的测试图
-const char* OUT_PATH   = "output/lane_result_ort.jpg";
-const char* MODEL_PATH = "models/lane_model.onnx";     // FP32
-//const char* MODEL_PATH = "models/lane_ort_int8.onnx";// INT8（换这行）
-
-const int INPUT_WIDTH  = 640;
-const int INPUT_HEIGHT = 640;
-
-const char* CLASS_NAMES[] = { "lane" };   // 只有 1 类
-const int   NUM_CLASSES   = 1;
-
-const float CONF_THRES = 0.25f;
-const float IOU_THRES  = 0.5f;
-// ---------------------------
+const char* CONFIG_PATH = "config.json";
+const char* OUT_PATH    = "output/lane_result_ort.jpg";
 
 struct Detection{
     double cx, cy, w, h;
@@ -49,50 +38,56 @@ bool compareScore(const Detection& a, const Detection& b) { return a.score > b.s
 
 int main() {
     try {
-        // 1. 读图
-        cv::Mat img = cv::imread(IMAGE_PATH);
-        if (img.empty()) { cout << "读图失败：" << IMAGE_PATH << endl; return 1; }
-        cout << "原图尺寸：" << img.cols << " x " << img.rows << endl;
+        Config cfg = load_config(CONFIG_PATH);
 
-        // 2. 预处理（注意：这里还是"直接拉伸"，跟训练时的 letterbox 不一致）
+        int W_IN  = cfg.input_width;
+        int H_IN  = cfg.input_height;
+        int N_CLS = (int)cfg.class_names.size();
+
+        // 1. 读图
+        cv::Mat img = cv::imread(cfg.image);
+        if (img.empty()) { cout << "读图失败：" << cfg.image << endl; return 1; }
+        cout << "配置：" << CONFIG_PATH << endl;
+        cout << "图片：" << cfg.image << "   " << img.cols << " x " << img.rows << endl;
+        cout << "模型：" << cfg.model_ort << "   输入 " << W_IN << " x " << H_IN << endl;
+
+        // 2. 预处理
         cv::Mat blob = cv::dnn::blobFromImage(
-            img, 1.0/255.0, cv::Size(INPUT_WIDTH, INPUT_HEIGHT),
+            img, 1.0/255.0, cv::Size(W_IN, H_IN),
             cv::Scalar(), true, false);
 
         // 3. 加载模型
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "LaneOrt");
         Ort::SessionOptions opt;
-        Ort::Session session(env, ORT_TSTR(MODEL_PATH), opt);
+        Ort::Session session(env, ORT_TSTR(cfg.model_ort.c_str()), opt);
 
-        // 4. 包 Tensor
-        vector<int64_t> shape = { 1, 3, INPUT_HEIGHT, INPUT_WIDTH };
-        auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-            mem, blob.ptr<float>(), 1*3*INPUT_HEIGHT*INPUT_WIDTH,
-            shape.data(), shape.size());
-
-        // 5. 推理
         const char* in_names[]  = { "images"  };
         const char* out_names[] = { "output0" };
+        vector<int64_t> shape = { 1, 3, H_IN, W_IN };
+        auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+        // 4. 推理
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+            mem, blob.ptr<float>(), 1*3*H_IN*W_IN,
+            shape.data(), shape.size());
         auto outputs = session.Run(Ort::RunOptions{nullptr},
                                    in_names, &input_tensor, 1, out_names, 1);
 
-        // 6. 取结果
+        // 5. 取结果
         const float* out = outputs[0].GetTensorData<float>();
-        auto out_shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
-        int N = (int)out_shape[2];
+        int N = (int)outputs[0].GetTensorTypeAndShapeInfo().GetShape()[2];
         cout << "候选框数量：" << N << endl;
 
-        // 7. 阈值过滤
+        // 6. 阈值过滤
         vector<Detection> boxes;
         for (int i = 0; i < N; i++) {
             float best_s = 0.0f;
             int   best_c = 0;
-            for (int c = 0; c < NUM_CLASSES; c++) {
-                float s = out[(4 + c) * N + i];
-                if (s > best_s) { best_s = s; best_c = c; }
+            for (int cc = 0; cc < N_CLS; cc++) {
+                float s = out[(4 + cc) * N + i];
+                if (s > best_s) { best_s = s; best_c = cc; }
             }
-            if (best_s > CONF_THRES) {
+            if (best_s > cfg.conf_thres) {
                 Detection d;
                 d.cx = out[0*N+i]; d.cy = out[1*N+i];
                 d.w  = out[2*N+i]; d.h  = out[3*N+i];
@@ -102,32 +97,33 @@ int main() {
         }
         cout << "超过阈值的框：" << boxes.size() << " 个" << endl;
 
-        // 8. NMS
+        // 7. NMS
         sort(boxes.begin(), boxes.end(), compareScore);
         vector<Detection> result;
         for (int i = 0; i < (int)boxes.size(); i++) {
             bool keep = true;
             for (int j = 0; j < (int)result.size(); j++) {
                 if (boxes[i].class_id != result[j].class_id) continue;
-                if (iou(boxes[i], result[j]) > IOU_THRES) { keep = false; break; }
+                if (iou(boxes[i], result[j]) > cfg.iou_thres) { keep = false; break; }
             }
             if (keep) result.push_back(boxes[i]);
         }
         cout << "NMS 后剩下：" << result.size() << " 个框" << endl;
 
-        // 9. 画框存图
+        // 8. 画框存图
         for (int i = 0; i < (int)result.size(); i++) {
-            const Detection& d = result[i];
-            double x1 = d.cx - d.w/2, y1 = d.cy - d.h/2;
-            int X = (int)(x1 * img.cols / INPUT_WIDTH  + 0.5);
-            int Y = (int)(y1 * img.rows / INPUT_HEIGHT + 0.5);
-            int W = (int)(d.w  * img.cols / INPUT_WIDTH  + 0.5);
-            int H = (int)(d.h  * img.rows / INPUT_HEIGHT + 0.5);
+            const Detection& de = result[i];
+            double x1 = de.cx - de.w/2, y1 = de.cy - de.h/2;
+            int X = (int)(x1 * img.cols / W_IN + 0.5);
+            int Y = (int)(y1 * img.rows / H_IN + 0.5);
+            int W = (int)(de.w * img.cols / W_IN + 0.5);
+            int H = (int)(de.h * img.rows / H_IN + 0.5);
 
             cv::rectangle(img, cv::Rect(X, Y, W, H), cv::Scalar(0, 0, 255), 2);
 
             char label[64];
-            snprintf(label, sizeof(label), "%s %.2f", CLASS_NAMES[d.class_id], d.score);
+            snprintf(label, sizeof(label), "%s %.2f",
+                     cfg.class_names[de.class_id].c_str(), de.score);
             int ty = (Y - 6 < 14) ? Y + 18 : Y - 6;
             cv::putText(img, label, cv::Point(X, ty),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
@@ -141,18 +137,3 @@ int main() {
     }
     return 0;
 }
-
-
-
-
-
-
-
-
-/*
-原图尺寸：2278 x 1280
-候选框数量：8400
-超过阈值的框：37 个
-NMS 后剩下：5 个框
-已保存：output/lane_result_ort.jpg
-*/

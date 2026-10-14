@@ -1,7 +1,7 @@
 // ==================================================================
-//  车道线检测 —— OpenVINO 版
-//  1 类（lane），输入 640×640
-//  换模型：改 MODEL_PATH 一行
+//  车道线检测 —— 单图检测（OpenVINO 版）
+//
+//  参数从 config.json 读，改参数不用重新编译
 // ==================================================================
 
 #include <opencv2/opencv.hpp>
@@ -10,23 +10,11 @@
 #include <vector>
 #include <algorithm>
 #include <cstdio>
+#include "config.hpp"
 using namespace std;
 
-// ---------- 配置区 ----------
-const char* IMAGE_PATH = "data/lane_test.jpg";
-const char* OUT_PATH   = "output/lane_result_ov.jpg";
-const char* MODEL_PATH = "models/lane_model.onnx";      // FP32
-//const char* MODEL_PATH = "models/lane_ov_int8.xml";   // 量化版
-
-const int INPUT_WIDTH  = 640;
-const int INPUT_HEIGHT = 640;
-
-const char* CLASS_NAMES[] = { "lane" };
-const int   NUM_CLASSES   = 1;
-
-const float CONF_THRES = 0.25f;
-const float IOU_THRES  = 0.5f;
-// ---------------------------
+const char* CONFIG_PATH = "config.json";
+const char* OUT_PATH    = "output/lane_result_ov.jpg";
 
 struct Detection{
     double cx, cy, w, h;
@@ -50,25 +38,32 @@ bool compareScore(const Detection& a, const Detection& b) { return a.score > b.s
 
 int main() {
     try {
+        Config cfg = load_config(CONFIG_PATH);
+
+        int W_IN  = cfg.input_width;
+        int H_IN  = cfg.input_height;
+        int N_CLS = (int)cfg.class_names.size();
+
         // 1. 读图
-        cv::Mat img = cv::imread(IMAGE_PATH);
-        if (img.empty()) { cout << "读图失败：" << IMAGE_PATH << endl; return 1; }
-        cout << "原图尺寸：" << img.cols << " x " << img.rows << endl;
-        cout << "模型文件：" << MODEL_PATH << endl;
+        cv::Mat img = cv::imread(cfg.image);
+        if (img.empty()) { cout << "读图失败：" << cfg.image << endl; return 1; }
+        cout << "配置：" << CONFIG_PATH << endl;
+        cout << "图片：" << cfg.image << "   " << img.cols << " x " << img.rows << endl;
+        cout << "模型：" << cfg.model_ov << "   输入 " << W_IN << " x " << H_IN << endl;
 
         // 2. 预处理
         cv::Mat blob = cv::dnn::blobFromImage(
-            img, 1.0/255.0, cv::Size(INPUT_WIDTH, INPUT_HEIGHT),
+            img, 1.0/255.0, cv::Size(W_IN, H_IN),
             cv::Scalar(), true, false);
 
         // 3. 加载模型
         ov::Core core;
-        auto model    = core.read_model(MODEL_PATH);
+        auto model    = core.read_model(cfg.model_ov);
         auto compiled = core.compile_model(model, "CPU");
         auto infer    = compiled.create_infer_request();
 
         // 4. 推理
-        ov::Shape input_shape = { 1, 3, (size_t)INPUT_HEIGHT, (size_t)INPUT_WIDTH };
+        ov::Shape input_shape = { 1, 3, (size_t)H_IN, (size_t)W_IN };
         ov::Tensor input_tensor(ov::element::f32, input_shape, blob.ptr<float>());
         infer.set_input_tensor(input_tensor);
         infer.infer();
@@ -76,8 +71,7 @@ int main() {
         // 5. 取结果
         auto out_tensor = infer.get_output_tensor();
         const float* out = out_tensor.data<float>();
-        ov::Shape out_shape = out_tensor.get_shape();
-        int N = (int)out_shape[2];
+        int N = (int)out_tensor.get_shape()[2];
         cout << "候选框数量：" << N << endl;
 
         // 6. 阈值过滤
@@ -85,11 +79,11 @@ int main() {
         for (int i = 0; i < N; i++) {
             float best_s = 0.0f;
             int   best_c = 0;
-            for (int cc = 0; cc < NUM_CLASSES; cc++) {
+            for (int cc = 0; cc < N_CLS; cc++) {
                 float s = out[(4 + cc) * N + i];
                 if (s > best_s) { best_s = s; best_c = cc; }
             }
-            if (best_s > CONF_THRES) {
+            if (best_s > cfg.conf_thres) {
                 Detection d;
                 d.cx = out[0*N+i]; d.cy = out[1*N+i];
                 d.w  = out[2*N+i]; d.h  = out[3*N+i];
@@ -106,7 +100,7 @@ int main() {
             bool keep = true;
             for (int j = 0; j < (int)result.size(); j++) {
                 if (boxes[i].class_id != result[j].class_id) continue;
-                if (iou(boxes[i], result[j]) > IOU_THRES) { keep = false; break; }
+                if (iou(boxes[i], result[j]) > cfg.iou_thres) { keep = false; break; }
             }
             if (keep) result.push_back(boxes[i]);
         }
@@ -116,15 +110,16 @@ int main() {
         for (int i = 0; i < (int)result.size(); i++) {
             const Detection& de = result[i];
             double x1 = de.cx - de.w/2, y1 = de.cy - de.h/2;
-            int X = (int)(x1 * img.cols / INPUT_WIDTH  + 0.5);
-            int Y = (int)(y1 * img.rows / INPUT_HEIGHT + 0.5);
-            int W = (int)(de.w * img.cols / INPUT_WIDTH  + 0.5);
-            int H = (int)(de.h * img.rows / INPUT_HEIGHT + 0.5);
+            int X = (int)(x1 * img.cols / W_IN + 0.5);
+            int Y = (int)(y1 * img.rows / H_IN + 0.5);
+            int W = (int)(de.w * img.cols / W_IN + 0.5);
+            int H = (int)(de.h * img.rows / H_IN + 0.5);
 
             cv::rectangle(img, cv::Rect(X, Y, W, H), cv::Scalar(0, 255, 0), 2);
 
             char label[64];
-            snprintf(label, sizeof(label), "%s %.2f", CLASS_NAMES[de.class_id], de.score);
+            snprintf(label, sizeof(label), "%s %.2f",
+                     cfg.class_names[de.class_id].c_str(), de.score);
             int ty = (Y - 6 < 14) ? Y + 18 : Y - 6;
             cv::putText(img, label, cv::Point(X, ty),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
@@ -138,16 +133,3 @@ int main() {
     }
     return 0;
 }
-
-
-
-
-/*
-原图尺寸：2278 x 1280
-模型文件：models/lane_model.onnx
-候选框数量：8400
-超过阈值的框：37 个
-NMS 后剩下：5 个框
-已保存：output/lane_result_ov.jpg
-
-*/
