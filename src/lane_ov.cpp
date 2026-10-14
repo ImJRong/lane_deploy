@@ -59,7 +59,7 @@ int main() {
         // 3. 加载模型
         ov::Core core;
         auto model    = core.read_model(cfg.model_ov);
-        auto compiled = core.compile_model(model, "CPU");
+        auto compiled = core.compile_model(model, cfg.device);
         auto infer    = compiled.create_infer_request();
 
         // 4. 推理

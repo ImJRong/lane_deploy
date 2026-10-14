@@ -27,6 +27,8 @@ struct Config {
     std::string image;                          // 单图测试用的图片
     std::string video;                          // 视频测试用的视频
 
+    std::string device = "CPU";                 // 推理设备：CPU 或 GPU
+
     int input_width  = 640;
     int input_height = 640;
 
@@ -54,6 +56,7 @@ inline Config load_config(const std::string& path) {
     c.model_ov     = j.value("model_ov",     c.model_ov);
     c.image        = j.value("image",        c.image);
     c.video        = j.value("video",        c.video);
+    c.device       = j.value("device",       c.device);
     c.input_width  = j.value("input_width",  c.input_width);
     c.input_height = j.value("input_height", c.input_height);
     c.conf_thres   = j.value("conf_thres",   c.conf_thres);

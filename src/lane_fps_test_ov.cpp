@@ -63,7 +63,7 @@ int main() {
         // ---------- 加载模型 ----------
         ov::Core core;
         auto model    = core.read_model(cfg.model_ov);
-        auto compiled = core.compile_model(model, "CPU");
+        auto compiled = core.compile_model(model, cfg.device);
         auto infer    = compiled.create_infer_request();
         ov::Shape input_shape = { 1, 3, (size_t)H_IN, (size_t)W_IN };
 

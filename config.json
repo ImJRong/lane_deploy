@@ -1,6 +1,9 @@
 {
   "model_ort": "models/lane_model.onnx",
-  "model_ov":  "models/lane_model.onnx",
+
+  "model_ov":"models/lane_ov_int8.xml",
+
+  "device": "CPU",
 
   "image": "data/lane_test.jpg",
   "video": "data/lane_test.mp4",
