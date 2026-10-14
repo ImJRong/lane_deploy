@@ -43,6 +43,25 @@ cmake . && make
 
 模型和视频按下面的路径放好。跑视频时按 Q 或 Esc 退出。
 
+## 配置
+
+参数都写在 `config.json` 里
+
+
+
+各字段含义：
+
+| 字段 | 说明 |
+|---|---|
+| `model_ort` / `model_ov` | 两个引擎各自的模型路径 |
+| `image` / `video` | 单图版和视频版的输入 |
+| `input_width` / `input_height` | 模型输入尺寸，必须和导出时一致 |
+| `conf_thres` | 分数阈值，低于它的框丢掉 |
+| `iou_thres` | NMS 的去重阈值 |
+| `skip_frames` | 视频开头跳过几帧，避开热身 |
+| `count_frames` | 统计多少帧，固定住才能横向比较 |
+| `class_names` | 类别名，数量就是类别数 |
+
 ## 文件说明
 
 | 路径 | 内容 |
@@ -58,9 +77,11 @@ cmake . && make
 | data/lane_test.jpg | 测试图片 |
 | tools/export_for_ort.py | 从 .pt 导出 ONNX 并做量化 |
 | tools/quant_for_ov.py | 用 NNCF 把 ONNX 量化成 OpenVINO 格式 |
+| config.json | 所有参数 |
+| src/config.hpp | 读配置的封装，定义 Config 结构体 |
+| src/json.hpp | 读 JSON 用的库，单文件无依赖 |
 | CMakeLists.txt | 编译配置 |
 
 ## 模型来源
 
-自采的 94 张行车记录仪视角车道线图片，用 yolov8n 迁移学习训练，50 轮，单类。导出 ONNX 时 imgsz 必须和训练一致，都是 640。
-（由于工作量原因暂未添加更多不同环境的图片，如雨天，阴天等）
+在 Cityscapes 之外自采的 94 张车道线图片上，用 yolov8n 迁移学习训练，50 轮，单类。导出 ONNX 时 imgsz 必须和训练一致，都是 640。
